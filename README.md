@@ -8,7 +8,30 @@
 巨型历史可能带来空白、卡顿、核心占用和崩溃风险。CLM 保留全部消息，只先
 打开最近内容，需要时再向上加载旧记录。
 
+在当前 Windows 实测的受管超长对话中，侧边栏切换造成的鼠标卡顿已经完全消失；
+多开窗口时，每个新窗口也不再重复吞下整份历史，重复的 CPU、内存、RPC 和渲染
+占用明显下降。
+
+In the validated Windows canary, the sidebar-switch pointer stall disappeared
+completely for the managed long task. Each fresh window also starts from a
+bounded newest page instead of rebuilding the whole visited history, which
+substantially reduces duplicated CPU, memory, RPC, and renderer work.
+
 > ClosedAI fuck you
+
+## 用起来最直接的变化 | What changes in daily use
+
+- **侧边栏切换不再拖死鼠标。** 对当前实测的受管超长对话，点击侧边栏任务时，
+  由全量历史 Resume 引起的鼠标卡顿已经消失。
+- **多开不再重复吞整份历史。** 新 renderer 只从有界最新页开始，不会继承另一个
+  窗口已经向上加载的所有旧页，因此显著减轻多窗口下重复的 CPU、内存、RPC 和
+  渲染压力。
+- **完整历史仍然保留。** 旧消息和图片没有被删除；需要时仍可向上翻页精确取回，
+  Restore 也能重建完整原始历史并合并启用后的新记录。
+
+This result is deliberately scoped. CLM removes the long-history Resume cost
+from managed task switching. It does not claim to fix the separate Electron
+GPU/compositor hitch that can happen while creating a brand-new blank window.
 
 ## The problem | 问题
 
