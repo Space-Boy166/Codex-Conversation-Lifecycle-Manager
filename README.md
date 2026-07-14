@@ -1,17 +1,55 @@
 # Codex Conversation Lifecycle Manager
 
-An unofficial, local lazy-history compatibility layer for long Codex Desktop
-conversations on Windows.
+**Keep long Codex Desktop tasks usable without throwing away their history.**
 
-CLM keeps the complete original transcript, opens a managed conversation from
-a bounded recent tail, and serves older turns through Codex's native paginated
-history API as the user scrolls upward. It does not patch the signed Store app,
-upload conversation data, or replace the official Codex backend.
+## The problem
+
+A long-running Codex task becomes valuable because it contains decisions,
+failed attempts, images, project context, and the exact path that led to the
+current work. But on affected Windows Desktop builds, that same history can
+become expensive to reopen.
+
+Legacy tasks are stored as append-only JSONL. When one grows to hundreds of
+megabytes or more, Codex may reconstruct the full file and eagerly request old
+history before you ask to see it. The result can be:
+
+- a blank or slow task while the backend rebuilds old turns;
+- one app-server core staying busy and contributing to mouse or desktop stalls;
+- the same cost returning when a task or window is reopened;
+- extra memory pressure, instability, and crashes around the tasks you most
+  want to preserve.
+
+Starting a new task avoids the large file, but it splits a useful working
+history into disposable fragments. Archiving the old task also does not help
+when you need to reopen it.
+
+## What CLM changes
+
+CLM keeps the complete original history safe on disk, but lets Codex open the
+recent part first. Older turns are fetched through Codex's existing paginated
+history API only when you scroll upward.
+
+```text
+Without CLM: open task -> rebuild a large history -> wait for the task
+With CLM:    open recent turns -> continue working -> load older pages on demand
+```
+
+That gives you:
+
+- a much smaller history surface for the initial resume;
+- the same task title, Project membership, thread id, messages, and old images;
+- exact older pages when you choose to scroll back;
+- per-task opt-in instead of a silent conversion of every conversation;
+- a verified, lossless Restore path if CLM or a future Codex build is not a
+  good fit.
+
+Everything stays local. CLM does not upload conversations, patch the signed
+Store app, or redistribute the official Codex backend.
 
 > **Alpha software:** CLM changes the active storage representation of a
 > selected conversation. It uses verified archives and reversible transactions,
-> but users should read the limitations below before enabling it on important
-> work.
+> but the first test should still be one non-critical task. CLM addresses the
+> long-history resume path; it does not claim to fix every source of Codex lag.
 
 ## Quick start
 
@@ -29,7 +67,7 @@ edit environment variables, or run Cargo commands.
 To undo the change, open `CLMSetup.exe` again and choose **Restore**. Restore
 rebuilds the complete original file and merges records added after activation.
 
-## What activation changes
+## How it works
 
 Codex legacy conversations are append-only JSONL files. On affected builds, the
 official app-server reconstructs the complete file before an external proxy can
@@ -53,7 +91,7 @@ old messages remain intact. CLM calls this **Enable lazy history** in the user
 interface; the source uses "migration" for the underlying atomic data-layout
 transaction.
 
-## Measured proof
+## What we measured
 
 The current Windows canary established:
 
