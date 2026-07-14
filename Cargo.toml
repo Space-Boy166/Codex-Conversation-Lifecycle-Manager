@@ -1,0 +1,22 @@
+[package]
+name = "conversation-lifecycle-manager"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Lossless indexed lifecycle runtime for large Codex conversations"
+default-run = "conversation-lifecycle-manager"
+
+[[bin]]
+name = "CLMSetup"
+path = "src/bin/clm-setup.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3.23"

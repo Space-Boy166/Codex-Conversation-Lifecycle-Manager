@@ -1,0 +1,8 @@
+/artifacts/
+/data/
+/runtime/
+/target/
+/tmp/
+*.log
+*.clm-new
+*.clm-rollback
