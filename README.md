@@ -1,13 +1,13 @@
 # Codex Conversation Lifecycle Manager
 
-**让超长对话继续用。别让历史变成惩罚。**
+**让 Codex Desktop 中的超长对话能继续用，而不是切一下就瞎几把乱卡**
 
 CLM is a reversible Windows compatibility layer for affected Codex Desktop
 builds. It preserves task identity, exact recoverability, and on-demand access
 to older turns while replacing eager legacy resume with a bounded recent page
 backed by an indexed history source.
 
-历史是资产，不是性能税。
+历史对话应当是资产，而不是妨碍老子开发的累赘
 
 On the validated managed canary, sidebar task switching stopped producing the
 pointer stall, and a fresh renderer no longer inherited the complete page set
@@ -16,7 +16,7 @@ renderer work specifically from the managed long-history path.
 
 > ClosedAI fuck you
 
-> OpenAI 只知道营销，不知道修用户体验，就是傻逼。
+> 只知道营销，不修用户体验，纯傻逼
 
 ## 日常变化
 
@@ -53,14 +53,14 @@ when you need to reopen it.
 
 ## 上游公开记录
 
-这不是个例。
+并非个例。
 
 CLM targets a documented upstream failure family rather than a hypothetical
 benchmark: independent reports across Codex surfaces and Windows builds describe
 unbounded thread metadata, eager long-history hydration, repeated full-state
 broadcast, and destructive resume-time failures.
 
-截至 2026-07-14，它们仍未关闭。
+截至 2026-07-14，依旧没关闭
 
 | Upstream report | What it establishes |
 | --- | --- |
@@ -78,15 +78,12 @@ repeatable Settings round-trip recovery narrows that adjacent failure toward
 renderer virtualization or observer lifecycle rather than slow SQLite or list
 RPC.
 
-边界要写清楚。
-
 These public reports do not establish one shared root cause, and CLM does not
 claim to solve every crash or renderer fault. CLM specifically mitigates the
 legacy long-history resume and replay path; Git Review storms, eager MCP
 ownership, local-state corruption, file-link crashes, and signed-frontend
 virtualization remain upstream or separate concerns.
 
-能修什么，就只说什么。
 
 ## What CLM changes
 
