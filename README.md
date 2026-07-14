@@ -1,39 +1,36 @@
 # Codex Conversation Lifecycle Manager
 
-**让超长 Codex Desktop 对话继续可用，而不是为了不卡被迫丢掉历史。**
+**让超长对话继续用。别让历史变成惩罚。**
 
-**Keep Long Codex Desktop Conversations Usable Without Throwing Away Their History.**
+CLM is a reversible Windows compatibility layer for affected Codex Desktop
+builds. It preserves task identity, exact recoverability, and on-demand access
+to older turns while replacing eager legacy resume with a bounded recent page
+backed by an indexed history source.
 
-超长对话本来是项目资产，但在部分 Windows 版 Codex Desktop 中，重新打开
-巨型历史可能带来空白、卡顿、核心占用和崩溃风险。CLM 保留全部消息，只先
-打开最近内容，需要时再向上加载旧记录。
+历史是资产，不是性能税。
 
-在当前 Windows 实测的受管超长对话中，侧边栏切换造成的鼠标卡顿已经完全消失；
-多开窗口时，每个新窗口也不再重复吞下整份历史，重复的 CPU、内存、RPC 和渲染
-占用明显下降。
-
-In the validated Windows canary, the sidebar-switch pointer stall disappeared
-completely for the managed long task. Each fresh window also starts from a
-bounded newest page instead of rebuilding the whole visited history, which
-substantially reduces duplicated CPU, memory, RPC, and renderer work.
+On the validated managed canary, sidebar task switching stopped producing the
+pointer stall, and a fresh renderer no longer inherited the complete page set
+loaded in another window. That removes duplicated CPU, memory, RPC, and
+renderer work specifically from the managed long-history path.
 
 > ClosedAI fuck you
 
-## 用起来最直接的变化 | What changes in daily use
+> OpenAI 只知道营销，不知道修用户体验，就是傻逼。
 
-- **侧边栏切换不再拖死鼠标。** 对当前实测的受管超长对话，点击侧边栏任务时，
-  由全量历史 Resume 引起的鼠标卡顿已经消失。
-- **多开不再重复吞整份历史。** 新 renderer 只从有界最新页开始，不会继承另一个
-  窗口已经向上加载的所有旧页，因此显著减轻多窗口下重复的 CPU、内存、RPC 和
-  渲染压力。
-- **完整历史仍然保留。** 旧消息和图片没有被删除；需要时仍可向上翻页精确取回，
-  Restore 也能重建完整原始历史并合并启用后的新记录。
+## 日常变化
 
-This result is deliberately scoped. CLM removes the long-history Resume cost
-from managed task switching. It does not claim to fix the separate Electron
-GPU/compositor hitch that can happen while creating a brand-new blank window.
+- **切换不再拖死鼠标。**
+- **多开不再重复吞历史。**
+- **旧消息和图片仍可找回。**
 
-## The problem | 问题
+These outcomes are deliberately scoped to one explicitly managed long task.
+CLM removes its eager Resume cost and prevents fresh renderers from inheriting
+already visited history pages; it does not repair the separate Electron
+GPU/compositor hitch that can occur before a brand-new blank window resumes any
+task.
+
+## Why this exists
 
 A long-running Codex task becomes valuable because it contains decisions,
 failed attempts, images, project context, and the exact path that led to the
@@ -91,7 +88,7 @@ virtualization remain upstream or separate concerns.
 
 能修什么，就只说什么。
 
-## What CLM changes | CLM 改变了什么
+## What CLM changes
 
 CLM keeps the complete original history safe on disk, but lets Codex open the
 recent part first. Older turns are fetched through Codex's existing paginated
@@ -119,23 +116,26 @@ Store app, or redistribute the official Codex backend.
 > but the first test should still be one non-critical task. CLM addresses the
 > long-history resume path; it does not claim to fix every source of Codex lag.
 
-## Quick start | 快速开始
+## 快速开始
 
-1. Download the latest Windows release ZIP from
-   [GitHub Releases](https://github.com/Space-Boy166/Codex-Conversation-Lifecycle-Manager/releases/latest).
-2. Extract the ZIP to a normal local folder.
-3. Double-click `CLMSetup.exe`.
-4. Choose **Enable lazy history**, select one conversation, and confirm.
+1. 从 [GitHub Releases](https://github.com/Space-Boy166/Codex-Conversation-Lifecycle-Manager/releases/latest)
+   下载 Windows ZIP。
+2. 解压到普通本地文件夹。
+3. 双击 `CLMSetup.exe`。
+4. 选择 **Enable lazy history**，挑一个对话并确认。
 
 The setup program handles Store-package detection, task discovery, disk-space
 checks, official-backend copying, archive creation, indexing, proxy activation,
 Codex restart, and startup verification. Users do not need to find JSONL files,
 edit environment variables, or run Cargo commands.
 
-To undo the change, open `CLMSetup.exe` again and choose **Restore**. Restore
-rebuilds the complete original file and merges records added after activation.
+想撤销时，再打开 `CLMSetup.exe`，选择 **Restore**。
 
-## How it works | 工作原理
+Restore reconstructs the complete original layout and merges every record
+appended after activation, so rollback does not discard work created while CLM
+was enabled.
+
+## How it works
 
 Codex legacy conversations are append-only JSONL files. On affected builds, the
 official app-server reconstructs the complete file before an external proxy can
@@ -159,7 +159,7 @@ old messages remain intact. CLM calls this **Enable lazy history** in the user
 interface; the source uses "migration" for the underlying atomic data-layout
 transaction.
 
-## What we measured | 实测结果
+## What we measured
 
 The current Windows canary established:
 
@@ -178,7 +178,7 @@ The backend binaries in Store packages `26.707.9564.0` and `26.707.9981.0` were
 byte-identical during this verification. Store updates remain version-sensitive
 and should be checked with `CLMSetup doctor` after an update.
 
-## Important limitations | 重要限制
+## Important limitations
 
 - The initial release targets the Microsoft Store Codex Desktop app on Windows
   x64.
@@ -206,7 +206,7 @@ See [Architecture](docs/ARCHITECTURE.md),
 [research evidence](docs/RESEARCH_EVIDENCE.md), and the
 [upstream frontend boundary](docs/UPSTREAM_FRONTEND_BLOCKER.md) for details.
 
-## Independent Codex mitigations | 其他 Codex 优化
+## Independent Codex mitigations
 
 [Codex Desktop performance troubleshooting](docs/CODEX_DESKTOP_TROUBLESHOOTING.md)
 documents optional No-Review workspace containment, `last-turn-only` Review
@@ -214,7 +214,7 @@ mode, Windows `BelowNormal` priority, MCP duplication, and new-window hitching.
 Those are separate mitigations, not CLM inventions. `CLMSetup.exe` does not
 apply them.
 
-## Command line | 命令行
+## Command line
 
 The setup executable also supports non-interactive inspection:
 
@@ -239,7 +239,7 @@ conversation-lifecycle-manager.exe restore-original --manifest C:\path\to\manife
 Mutation commands refuse to run while `ChatGPT.exe`, `codex.exe`, or the CLM
 proxy is still active. `--fixture` is for copied test data only.
 
-## Build and test | 构建与测试
+## Build and test
 
 ```powershell
 cargo fmt --all --check
@@ -254,7 +254,7 @@ release artifacts are ignored by Git. Release ZIPs contain CLM binaries only;
 `CLMSetup.exe` copies the official backend from the user's installed Store
 package after installation.
 
-## Project position | 项目定位
+## Project position
 
 CLM does not claim to have invented lazy loading. Codex upstream is already
 developing paginated thread history and SQLite TurnItems. This project is an
@@ -266,6 +266,6 @@ The reusable lifecycle core can later support other agent runtimes, including
 Ultimate Agent Frame adapters, without bundling their product-specific policy
 into the Codex installer.
 
-## License | 许可证
+## License
 
 MIT. This project is not affiliated with or endorsed by OpenAI.
