@@ -54,6 +54,43 @@ Starting a new task avoids the large file, but it splits a useful working
 history into disposable fragments. Archiving the old task also does not help
 when you need to reopen it.
 
+## 上游公开记录
+
+这不是个例。
+
+CLM targets a documented upstream failure family rather than a hypothetical
+benchmark: independent reports across Codex surfaces and Windows builds describe
+unbounded thread metadata, eager long-history hydration, repeated full-state
+broadcast, and destructive resume-time failures.
+
+截至 2026-07-14，它们仍未关闭。
+
+| Upstream report | What it establishes |
+| --- | --- |
+| [#21211](https://github.com/openai/codex/issues/21211) | The core scope: thread navigation and loading can scale with unbounded metadata and eagerly hydrated history. |
+| [#20781](https://github.com/openai/codex/issues/20781) | An adjacent transport path: completed long threads repeatedly broadcast large full-state snapshots, multiplying extension-host and renderer work. |
+| [#32722](https://github.com/openai/codex/issues/32722) | A current Windows reproduction from this project's author: opening a new window still fans out full conversation snapshots for every streaming thread. |
+| [#31583](https://github.com/openai/codex/issues/31583) | An independent Windows impact report: resuming long-running threads can silently destroy and relaunch the AppX container. |
+
+线程少、后端快，照样会卡。
+
+An [independent Windows `26.707.9981.0` datapoint](https://github.com/openai/codex/issues/21211#issuecomment-4970497508)
+inside #21211 reproduced a stuck conversation sidebar with only 215 local
+threads while `thread/list` stayed at roughly 1 ms median and 14 ms p95. The
+repeatable Settings round-trip recovery narrows that adjacent failure toward
+renderer virtualization or observer lifecycle rather than slow SQLite or list
+RPC.
+
+边界要写清楚。
+
+These public reports do not establish one shared root cause, and CLM does not
+claim to solve every crash or renderer fault. CLM specifically mitigates the
+legacy long-history resume and replay path; Git Review storms, eager MCP
+ownership, local-state corruption, file-link crashes, and signed-frontend
+virtualization remain upstream or separate concerns.
+
+能修什么，就只说什么。
+
 ## What CLM changes | CLM 改变了什么
 
 CLM keeps the complete original history safe on disk, but lets Codex open the

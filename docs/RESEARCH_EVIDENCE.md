@@ -48,6 +48,78 @@ A metadata-only inventory found 428 rollout files totaling 52.609 GiB, including
 12 files at least 1 GiB; every migration candidate still requires independent
 checkpoint, continuity, identity, and rollback proof.
 
+## Public issue map
+
+公开记录如下。
+
+This map separates reports that directly support CLM's long-history mechanism
+from adjacent Windows reliability failures. A link proves that the failure was
+publicly reported and remains inspectable; it does not by itself prove that
+OpenAI has accepted one root cause or that CLM fixes the entire incident.
+
+### Direct long-history failure family
+
+- [#21211 — Thread navigation/loading slows from unbounded metadata and eager
+  large-history hydration](https://github.com/openai/codex/issues/21211) is the
+  umbrella report closest to CLM's scope. It covers oversized list metadata,
+  eager full-history reads, and the need for bounded initial hydration plus
+  paginated turns.
+- [#20781 — Repeated huge `thread-stream-state-changed`
+  snapshots](https://github.com/openai/codex/issues/20781) shows the same
+  retained-history pressure escaping through a different surface: completed
+  long threads can repeatedly broadcast full state and multiply work in the VS
+  Code extension host and renderer.
+- [#32722 — New Windows still fan out full conversation
+  snapshots](https://github.com/openai/codex/issues/32722) records the current
+  Windows reproduction submitted by CLM's author. It is first-party project
+  evidence, not an independent user report, and demonstrates that a newly
+  connected window still receives full snapshots for every streaming thread.
+- [#31583 — Windows AppX container silently relaunches after long-thread
+  resume](https://github.com/openai/codex/issues/31583) is independent impact
+  evidence. It links long-running-thread resume to a destructive application
+  lifecycle symptom without claiming that eager hydration is the only possible
+  cause.
+- [The `tail_history` A/B on Windows build
+  `26.707.8479.0`](https://github.com/openai/codex/issues/21211#issuecomment-4955990099)
+  isolated one idle 1.258 GB task repeatedly requesting old pages and consuming
+  almost one app-server core; closing only that restored window stopped the
+  loop and reduced app-server CPU to roughly 1%.
+- [An independent renderer datapoint on Windows build
+  `26.707.9981.0`](https://github.com/openai/codex/issues/21211#issuecomment-4970497508)
+  observed a sidebar freeze with 215 threads even though `thread/list` remained
+  fast and error-free. The repeatable Settings remount recovery and thousands
+  of `ResizeObserver` warnings point toward an adjacent renderer lifecycle
+  boundary, not the indexed history path CLM owns.
+
+证据来自不同用户，也来自不同版本。
+
+### Adjacent Windows failures outside CLM coverage
+
+- [#32154 — One eager MCP stack per opened chat plus history
+  replay](https://github.com/openai/codex/issues/32154) concerns MCP ownership
+  and navigation-time replay. CLM does not create, deduplicate, or retire MCP
+  process chains.
+- [#26812 — Repeated `git.exe` and `conhost.exe`
+  spawning](https://github.com/openai/codex/issues/26812) concerns Git workspace
+  discovery and process pressure. It is not evidence for changing conversation
+  storage.
+- [#29593 — Restart loop after corrupted local
+  state](https://github.com/openai/codex/issues/29593) concerns local-state
+  corruption and recovery. CLM's transactional rollback reduces its own write
+  risk but is not a general Codex state repair tool.
+- [#26165 — Crash while opening a local file link with the default
+  app](https://github.com/openai/codex/issues/26165) concerns the Desktop shell
+  handoff path. It demonstrates a separate crash surface and does not validate
+  CLM's history mechanism.
+
+不是一个根因，也不是一个工具能全修。
+
+The adjacent reports matter because they prevent a misleading universal claim:
+removing long-history resume pressure can make managed tasks materially faster
+and more stable, but it cannot repair signed-frontend virtualization, Git
+Review containment, MCP lifecycle, shell activation, or unrelated state
+corruption. CLM's credibility depends on preserving that boundary.
+
 ## Upstream Codex evidence
 
 - App-server paging, `excludeTurns`, `initialTurnsPage`, and compaction:
