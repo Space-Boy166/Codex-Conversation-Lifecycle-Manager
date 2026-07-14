@@ -16,7 +16,7 @@ upload conversation data, or replace the official Codex backend.
 ## Quick start
 
 1. Download the latest Windows release ZIP from
-   [GitHub Releases](https://github.com/OVN-Venxus/codex-conversation-lifecycle-manager/releases/latest).
+   [GitHub Releases](https://github.com/Space-Boy166/codex-conversation-lifecycle-manager/releases/latest).
 2. Extract the ZIP to a normal local folder.
 3. Double-click `CLMSetup.exe`.
 4. Choose **Enable lazy history**, select one conversation, and confirm.
