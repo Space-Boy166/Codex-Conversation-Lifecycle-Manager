@@ -19,7 +19,6 @@ use conversation_lifecycle_manager::default_codex_home;
 use conversation_lifecycle_manager::default_runtime_root;
 use conversation_lifecycle_manager::generate_fixture;
 use conversation_lifecycle_manager::prepare_migration;
-use conversation_lifecycle_manager::refresh_migration;
 use conversation_lifecycle_manager::rehydrate_migration;
 use conversation_lifecycle_manager::rollback_migration;
 use conversation_lifecycle_manager::scan_native_checkpoints;
@@ -126,16 +125,6 @@ enum Command {
         #[arg(long)]
         fixture: bool,
     },
-    RefreshMigration {
-        #[arg(long)]
-        manifest: PathBuf,
-        #[arg(long)]
-        backend: PathBuf,
-        #[arg(long)]
-        runtime_root: Option<PathBuf>,
-        #[arg(long)]
-        fixture: bool,
-    },
     InspectCheckpoints {
         #[arg(long)]
         rollout: PathBuf,
@@ -149,8 +138,6 @@ enum Command {
         runtime_root: Option<PathBuf>,
         #[arg(long)]
         codex_home: Option<PathBuf>,
-        #[arg(long)]
-        force: bool,
     },
 }
 
@@ -292,20 +279,6 @@ fn main() -> Result<()> {
         Command::RestoreOriginal { manifest, fixture } => {
             print_json(&rehydrate_migration(&manifest, fixture)?)?;
         }
-        Command::RefreshMigration {
-            manifest,
-            backend,
-            runtime_root,
-            fixture,
-        } => {
-            let runtime_root = runtime_root.map(Ok).unwrap_or_else(default_runtime_root)?;
-            print_json(&refresh_migration(
-                &manifest,
-                backend,
-                runtime_root,
-                fixture,
-            )?)?;
-        }
         Command::InspectCheckpoints { rollout } => {
             print_json(&scan_native_checkpoints(&rollout)?)?;
         }
@@ -314,7 +287,6 @@ fn main() -> Result<()> {
             backend,
             runtime_root,
             codex_home,
-            force,
         } => {
             let runtime_root = runtime_root.map(Ok).unwrap_or_else(default_runtime_root)?;
             let codex_home = codex_home.map(Ok).unwrap_or_else(default_codex_home)?;
@@ -323,7 +295,6 @@ fn main() -> Result<()> {
                 backend,
                 runtime_root,
                 codex_home,
-                force,
             )?)?;
         }
     }

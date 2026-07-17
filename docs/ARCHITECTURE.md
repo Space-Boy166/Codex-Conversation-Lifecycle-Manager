@@ -60,27 +60,6 @@ selects the much smaller model-visible checkpoint and suffix.
 Preserve the latest native replacement-history checkpoint and every later
 record exactly. Never generate a substitute checkpoint externally.
 
-This checkpoint requirement belongs to the current compatibility transaction,
-not to model inference as a universal law. The current official backend can
-reconstruct continuation from either the complete rollout or an official
-replacement-history checkpoint plus its exact suffix. Removing a prefix without
-either representation may still leave parseable JSONL, but it silently removes
-model-visible state. A future native segmented backend may store pre-checkpoint
-records in separate files without semantic loss only when the official context
-builder can resolve the exact required items across those segments.
-
-Semantic and host-performance control stay independent. Codex decides when its
-model context requires Compact. CLM may reduce Resume I/O only around a useful
-checkpoint that already exists naturally; bytes, elapsed time, or host pressure
-must never force semantic compaction.
-
-The current release deliberately implements no Compact decision engine. It
-consumes useful checkpoints that Codex has already produced and otherwise
-defers the storage rotation unchanged. The manual official-Compact command is
-retained as an operator capability, but CLM lifecycle maintenance, file-size
-thresholds, and Resume measurements never call it. A later semantic policy may
-be designed separately; it is not part of lazy-history or exit maintenance.
-
 ### Project continuity
 
 Before trimming, inspect the full task and the real project. Write verified
@@ -162,45 +141,6 @@ pressure relief. It is not the desired final user experience.
 13. Reopen one canary task and verify UI identity, model continuity, and appends.
 14. Only then process another bounded batch.
 
-### Managed generation refresh
-
-Lazy paging bounds the archived prefix, but it does not make the active JSONL
-permanently small. New turns, tool results, reasoning records, and later native
-compaction records continue appending to that active file. A long-running
-managed task can therefore become expensive to resume again even though its old
-pages are still served lazily from the sidecar index.
-
-`refresh-migration` is the offline generation-rotation transaction for that
-case. It losslessly rehydrates the archived prefix plus every post-activation
-record, prepares a new index and candidate around the newest native checkpoint,
-and activates the candidate only when it is smaller than the active file it
-replaces. The previous manifest, rollback, compact active file, and index remain
-in timestamped evidence paths. If preparation, projection, activation, or
-verification fails, the previous managed generation is restored by exact file
-ownership rather than deleted.
-
-Refresh is not a watcher and never mutates a live rollout. It requires a
-controlled Codex shutdown and a newer useful native checkpoint. See
-`docs/MANAGED_TAIL_REFRESH.md` for the command, transaction states, and
-acceptance evidence.
-
-### Automation boundary
-
-The public alpha exposes refresh as an explicit offline transaction. It does
-not install a polling watcher, close Codex, relaunch the app, or schedule
-maintenance for the user.
-
-An event-driven lifecycle can avoid polling by waiting on one exact Codex root
-process handle, then verifying that no exact Codex owner remains before it
-inspects managed manifests. Any public implementation must also retain a
-recovery marker and the previous generation so an interrupted exit cannot leave
-the active task between generations.
-
-Automation must rotate only around a newer useful checkpoint that Codex
-produced naturally. If none exists, it must defer without changing the rollout.
-Host performance must never trigger semantic native Compact, and process
-control must never broaden into terminating unrelated Codex windows.
-
 ## 9. Thread classification
 
 - Fresh checkpoint: rotate directly after continuity audit.
@@ -258,30 +198,6 @@ does not run a watcher, MCP server, or background indexer.
 
 Retrieval triggers include references such as "earlier", "the previous image",
 "the decision from last week", or a checkpoint that points to archived detail.
-
-The planned retrieval contract is hierarchical rather than a top-k raw-chunk
-dump:
-
-1. An always-small history map advertises that exact indexed evidence exists.
-2. A thread timeline summary identifies relevant phases, decisions, constraints,
-   artifacts, and unresolved work.
-3. Bounded episode summaries narrow the search to exact turn ranges.
-4. Raw turns, tool records, values, quotations, and attachments are materialized
-   only when exact evidence is required.
-
-Summaries are navigation artifacts, not native Compact records and not evidence
-authorities. Every summary node keeps source ranges, timestamps, hashes, and
-children so retrieval can descend to immutable raw records. Full-text search
-locates exact paths, numbers, commands, and wording. Embedding similarity may
-locate paraphrased concepts, but it only proposes candidates; it never replaces
-raw evidence or enters model context by itself.
-
-For Codex compatibility, bounded high-confidence recall can be injected at a
-turn boundary and deeper retrieval remains explicit. For UAF integration, CLM
-owns lossless storage, indexing, provenance, and bounded retrieval; UAF owns the
-decision to recall, the evidence budget, and what enters each agent's active
-context. This keeps current-goal context small while making older project memory
-available on demand.
 
 ## 13. Native UI feasibility
 
@@ -405,37 +321,7 @@ a virtual list. Exact native browsing is the target, not a future bonus.
 The compatibility vault still retains full rehydration so no migration decision
 can strand history or bind recovery to one client implementation.
 
-## 15. Deferred live-maintenance ladder
-
-The current compatibility release finishes the offline foundation before it
-attempts a transparent running-process refresh. Its accepted baseline is:
-
-1. consume an existing useful native Compact;
-2. preserve exact archived history and its SQLite projection;
-3. serve bounded Resume and lazy UI pages from the managed generation;
-4. refresh the mutable active tail only after Codex owners exit;
-5. retain a complete previous generation and verified rollback.
-
-Live maintenance remains a staged future route:
-
-1. **Shadow sync:** on an existing `turn/completed` event, incrementally index
-   only complete appended records and prepare read-only refresh evidence. This
-   does not replace the active rollout or claim to free live process memory.
-2. **Visible backend recycle canary:** after proving no in-flight turn, stop the
-   exact official app-server child, rotate around an existing natural Compact,
-   restart it, and verify protocol initialization, append continuity, paging,
-   notifications, and rollback while the Desktop window remains visible.
-3. **Transparent backend recycle:** queue and replay bounded client requests so
-   the proven recycle no longer requires user coordination.
-4. **Native bounded runtime:** move segmentation and in-memory eviction into the
-   owning backend and virtualized frontend. This is the only route that can keep
-   disk, app-server RAM, and renderer RAM bounded without periodic recycling.
-
-No later stage may be described as seamless until the preceding stage passes a
-real Store canary. Until that ownership contract is proven, the hard rule remains
-zero active-rollout writes while any Codex owner is alive.
-
-## 16. Hard acceptance gates
+## 15. Hard acceptance gates
 
 - Zero writes while an owner process is alive.
 - Zero synthetic checkpoints.
