@@ -111,6 +111,7 @@ impl CodexOracle {
         &self,
         rollout: &Path,
         codex_home: &Path,
+        force: bool,
     ) -> Result<NativeCompactionReport> {
         let rollout = std::fs::canonicalize(rollout)
             .with_context(|| format!("failed to resolve {}", rollout.display()))?;
@@ -119,7 +120,7 @@ impl CodexOracle {
         let thread_id = read_rollout_thread_id(&rollout)?;
         let before = scan_native_checkpoints(&rollout)?;
         let sha256_before = sha256_file(&rollout)?;
-        if before.checkpoint_count > 0 {
+        if before.checkpoint_count > 0 && !force {
             return Ok(NativeCompactionReport {
                 thread_id,
                 source_path: rollout.to_string_lossy().into_owned(),
@@ -134,8 +135,10 @@ impl CodexOracle {
         }
         self.compact_inner(&rollout, &thread_id, &codex_home)?;
         let after = scan_native_checkpoints(&rollout)?;
-        if after.checkpoint_count == 0 {
-            bail!("official compaction completed without persisting a native checkpoint");
+        let checkpoint_advanced = after.checkpoint_count > before.checkpoint_count
+            || after.latest_checkpoint_offset > before.latest_checkpoint_offset;
+        if !checkpoint_advanced {
+            bail!("official compaction completed without persisting a newer native checkpoint");
         }
         let sha256_after = sha256_file(&rollout)?;
         Ok(NativeCompactionReport {
@@ -147,7 +150,11 @@ impl CodexOracle {
             sha256_after,
             checkpoint_count_before: before.checkpoint_count,
             checkpoint_count_after: after.checkpoint_count,
-            state: "native_checkpoint_created".to_string(),
+            state: if force {
+                "native_checkpoint_refreshed".to_string()
+            } else {
+                "native_checkpoint_created".to_string()
+            },
         })
     }
 

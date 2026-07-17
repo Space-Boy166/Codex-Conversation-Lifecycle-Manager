@@ -73,6 +73,27 @@ pub struct MigrationRehydrateReport {
     pub state: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationRefreshReport {
+    pub thread_id: String,
+    pub active_path: String,
+    pub active_sha256: String,
+    pub active_bytes_before: u64,
+    pub active_bytes_after: u64,
+    pub active_bytes_reclaimed: u64,
+    pub rehydrated_sha256: String,
+    pub rehydrated_bytes: u64,
+    pub appended_bytes: u64,
+    pub manifest_path: String,
+    pub rollback_path: String,
+    pub previous_manifest_path: String,
+    pub previous_rollback_path: String,
+    pub previous_active_path: String,
+    pub previous_index_path: String,
+    pub state: String,
+}
+
 pub fn prepare_migration(
     rollout: &Path,
     backend: PathBuf,
@@ -410,14 +431,221 @@ pub fn rehydrate_migration(
     })
 }
 
+/// Rebuilds an already managed conversation around its newest native checkpoint.
+///
+/// The operation is deliberately offline and generation preserving. It first
+/// reconstructs the complete current rollout, rotates the previous manifest and
+/// rollback into timestamped evidence paths, prepares a new indexed generation,
+/// and activates it only when the new candidate is smaller than the active file
+/// it replaces. Any failure after rehydration restores the previous managed
+/// active rollout and index while retaining the failed generation for diagnosis.
+pub fn refresh_migration(
+    manifest_path: &Path,
+    backend: PathBuf,
+    runtime_root: PathBuf,
+    fixture_mode: bool,
+) -> Result<MigrationRefreshReport> {
+    if !fixture_mode {
+        ensure_codex_closed()?;
+    }
+
+    let manifest_path = std::fs::canonicalize(manifest_path)
+        .with_context(|| format!("failed to resolve {}", manifest_path.display()))?;
+    let previous_manifest: MigrationManifest = serde_json::from_reader(File::open(&manifest_path)?)
+        .context("invalid migration manifest")?;
+    let expected_manifest = runtime_root
+        .join("Data")
+        .join("Vault")
+        .join("Codex")
+        .join(&previous_manifest.thread_id)
+        .join("manifest.json");
+    let expected_manifest = std::fs::canonicalize(&expected_manifest).with_context(|| {
+        format!(
+            "canonical managed manifest is missing: {}",
+            expected_manifest.display()
+        )
+    })?;
+    if manifest_path != expected_manifest {
+        bail!(
+            "refresh requires the canonical managed manifest: expected {}, got {}",
+            expected_manifest.display(),
+            manifest_path.display()
+        );
+    }
+
+    let original = PathBuf::from(&previous_manifest.original_path);
+    let rollback = PathBuf::from(&previous_manifest.rollback_path);
+    let index = PathBuf::from(&previous_manifest.index_path);
+    if !rollback.is_file() {
+        bail!(
+            "refresh requires the previous same-volume rollback: {}",
+            rollback.display()
+        );
+    }
+    if !index.is_file() {
+        bail!("refresh requires the managed index: {}", index.display());
+    }
+    let active_bytes_before = std::fs::metadata(&original)
+        .with_context(|| format!("missing active rollout {}", original.display()))?
+        .len();
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+    let vault = manifest_path
+        .parent()
+        .context("managed manifest has no vault directory")?
+        .to_path_buf();
+    let vault_name = vault
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("managed vault name is not valid UTF-8")?;
+    let cycle_vault = vault.with_file_name(format!("{vault_name}.clm-cycle-{stamp}"));
+    let cycle_rollback = sidecar_path(&rollback, &format!("clm-cycle-{stamp}"))?;
+    if cycle_vault.exists() || cycle_rollback.exists() {
+        bail!("refresh generation paths already exist");
+    }
+
+    let rehydrated = rehydrate_migration(&manifest_path, true)?;
+    let previous_active = PathBuf::from(&rehydrated.displaced_candidate_path);
+    let previous_index = PathBuf::from(&rehydrated.disabled_index_path);
+
+    if let Err(error) = std::fs::rename(&vault, &cycle_vault) {
+        let recovery = restore_rehydrated_managed_state(
+            &original,
+            &previous_active,
+            &index,
+            &previous_index,
+            stamp,
+        );
+        return match recovery {
+            Ok(_) => {
+                Err(error).context("failed to rotate the previous vault; managed state restored")
+            }
+            Err(recovery_error) => Err(anyhow::anyhow!(
+                "failed to rotate the previous vault ({error}); EMERGENCY recovery also failed ({recovery_error})"
+            )),
+        };
+    }
+    if let Err(error) = std::fs::rename(&rollback, &cycle_rollback) {
+        let vault_restore = std::fs::rename(&cycle_vault, &vault);
+        let state_restore = restore_rehydrated_managed_state(
+            &original,
+            &previous_active,
+            &index,
+            &previous_index,
+            stamp,
+        );
+        return match (vault_restore, state_restore) {
+            (Ok(()), Ok(_)) => {
+                Err(error).context("failed to rotate the previous rollback; managed state restored")
+            }
+            (vault_result, state_result) => Err(anyhow::anyhow!(
+                "failed to rotate the previous rollback ({error}); EMERGENCY recovery results: vault={vault_result:?}, managed_state={state_result:?}"
+            )),
+        };
+    }
+
+    let refresh_attempt = (|| -> Result<MigrationRefreshReport> {
+        let (new_manifest_path, new_manifest) =
+            prepare_migration(&original, backend, runtime_root.clone(), true)?;
+        if new_manifest.thread_id != previous_manifest.thread_id {
+            bail!("refreshed manifest changed the thread id");
+        }
+        if new_manifest.source_bytes != rehydrated.restored_bytes
+            || new_manifest.source_sha256 != rehydrated.restored_sha256
+        {
+            bail!("refreshed manifest does not describe the rehydrated source exactly");
+        }
+        if new_manifest.candidate_bytes >= active_bytes_before {
+            bail!(
+                "new active candidate would not reduce resume cost: current {active_bytes_before} bytes, candidate {} bytes",
+                new_manifest.candidate_bytes
+            );
+        }
+
+        let applied = apply_migration(&new_manifest_path, true)?;
+        verify_file(
+            Path::new(&new_manifest.rollback_path),
+            new_manifest.source_bytes,
+            &new_manifest.source_sha256,
+            "refreshed rollback",
+        )?;
+        verify_file(
+            Path::new(&new_manifest.archive_path),
+            new_manifest.source_bytes,
+            &new_manifest.source_sha256,
+            "refreshed archive",
+        )?;
+        verify_file(
+            &original,
+            new_manifest.candidate_bytes,
+            &new_manifest.candidate_sha256,
+            "refreshed active rollout",
+        )?;
+        if !cycle_vault.join("manifest.json").is_file()
+            || !cycle_rollback.is_file()
+            || !previous_active.is_file()
+            || !previous_index.is_file()
+        {
+            bail!("previous managed generation is not fully retained");
+        }
+
+        Ok(MigrationRefreshReport {
+            thread_id: new_manifest.thread_id,
+            active_path: applied.active_path,
+            active_sha256: applied.active_sha256,
+            active_bytes_before,
+            active_bytes_after: applied.active_bytes,
+            active_bytes_reclaimed: active_bytes_before - applied.active_bytes,
+            rehydrated_sha256: rehydrated.restored_sha256,
+            rehydrated_bytes: rehydrated.restored_bytes,
+            appended_bytes: rehydrated.appended_bytes,
+            manifest_path: new_manifest_path.to_string_lossy().into_owned(),
+            rollback_path: applied.rollback_path,
+            previous_manifest_path: cycle_vault
+                .join("manifest.json")
+                .to_string_lossy()
+                .into_owned(),
+            previous_rollback_path: cycle_rollback.to_string_lossy().into_owned(),
+            previous_active_path: previous_active.to_string_lossy().into_owned(),
+            previous_index_path: previous_index.to_string_lossy().into_owned(),
+            state: "refreshed_with_previous_generation_retained".to_string(),
+        })
+    })();
+
+    match refresh_attempt {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            let recovery = restore_previous_refresh_generation(
+                &original,
+                &previous_active,
+                &index,
+                &previous_index,
+                &vault,
+                &cycle_vault,
+                &rollback,
+                &cycle_rollback,
+                &runtime_root,
+                &previous_manifest.thread_id,
+                stamp,
+            );
+            match recovery {
+                Ok(_) => Err(error).context("refresh failed; previous managed state was restored"),
+                Err(recovery_error) => Err(anyhow::anyhow!(
+                    "refresh failed ({error}); EMERGENCY previous-state recovery also failed ({recovery_error})"
+                )),
+            }
+        }
+    }
+}
+
 pub fn create_native_checkpoint_offline(
     rollout: &Path,
     backend: PathBuf,
     runtime_root: PathBuf,
     codex_home: PathBuf,
+    force: bool,
 ) -> Result<crate::NativeCompactionReport> {
     ensure_codex_closed()?;
-    CodexOracle::new(backend, runtime_root).compact_with_native_backend(rollout, &codex_home)
+    CodexOracle::new(backend, runtime_root).compact_with_native_backend(rollout, &codex_home, force)
 }
 
 pub fn build_active_candidate(
@@ -628,6 +856,103 @@ fn sidecar_path(path: &Path, suffix: &str) -> Result<PathBuf> {
     Ok(path.with_file_name(format!("{name}.{suffix}")))
 }
 
+fn move_if_exists(source: &Path, destination: &Path) -> Result<bool> {
+    if !source.exists() {
+        return Ok(false);
+    }
+    if destination.exists() {
+        bail!(
+            "refusing to overwrite preserved refresh artifact: {}",
+            destination.display()
+        );
+    }
+    std::fs::rename(source, destination).with_context(|| {
+        format!(
+            "failed to preserve {} as {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(true)
+}
+
+fn restore_rehydrated_managed_state(
+    original: &Path,
+    previous_active: &Path,
+    index: &Path,
+    previous_index: &Path,
+    stamp: u128,
+) -> Result<Vec<PathBuf>> {
+    let failed_active = sidecar_path(original, &format!("clm-refresh-failed-{stamp}-rehydrated"))?;
+    let failed_index = index.with_extension(format!("sqlite.clm-refresh-failed-{stamp}"));
+    let mut preserved = Vec::new();
+    if move_if_exists(original, &failed_active)? {
+        preserved.push(failed_active);
+    }
+    if move_if_exists(index, &failed_index)? {
+        preserved.push(failed_index);
+    }
+    std::fs::rename(previous_active, original)
+        .context("failed to restore the previous managed active rollout")?;
+    std::fs::rename(previous_index, index)
+        .context("failed to restore the previous managed index")?;
+    Ok(preserved)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_previous_refresh_generation(
+    original: &Path,
+    previous_active: &Path,
+    index: &Path,
+    previous_index: &Path,
+    vault: &Path,
+    cycle_vault: &Path,
+    rollback: &Path,
+    cycle_rollback: &Path,
+    runtime_root: &Path,
+    thread_id: &str,
+    stamp: u128,
+) -> Result<Vec<PathBuf>> {
+    let failed_vault = vault.with_file_name(format!("{thread_id}.clm-refresh-failed-{stamp}"));
+    let failed_rollback =
+        sidecar_path(rollback, &format!("clm-refresh-failed-{stamp}-rehydrated"))?;
+    let candidate = sidecar_path(original, "clm-new")?;
+    let failed_candidate =
+        sidecar_path(original, &format!("clm-refresh-failed-{stamp}-candidate"))?;
+    let staging_index = runtime_root
+        .join("Data")
+        .join("Indexes")
+        .join(format!("{thread_id}.sqlite.clm-new"));
+    let failed_staging_index = runtime_root.join("Data").join("Indexes").join(format!(
+        "{thread_id}.sqlite.clm-refresh-failed-{stamp}-staging"
+    ));
+
+    let mut preserved = Vec::new();
+    if move_if_exists(vault, &failed_vault)? {
+        preserved.push(failed_vault);
+    }
+    if move_if_exists(rollback, &failed_rollback)? {
+        preserved.push(failed_rollback);
+    }
+    if move_if_exists(&candidate, &failed_candidate)? {
+        preserved.push(failed_candidate);
+    }
+    if move_if_exists(&staging_index, &failed_staging_index)? {
+        preserved.push(failed_staging_index);
+    }
+    preserved.extend(restore_rehydrated_managed_state(
+        original,
+        previous_active,
+        index,
+        previous_index,
+        stamp,
+    )?);
+    std::fs::rename(cycle_vault, vault).context("failed to restore the previous managed vault")?;
+    std::fs::rename(cycle_rollback, rollback)
+        .context("failed to restore the previous same-volume rollback")?;
+    Ok(preserved)
+}
+
 fn install_staging_index(staging: &Path, final_path: &Path) -> Result<()> {
     let previous = if final_path.exists() {
         let previous = final_path.with_extension(format!(
@@ -716,4 +1041,116 @@ pub fn ensure_codex_closed() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn rehydration_recovery_restores_previous_active_and_index() -> Result<()> {
+        let temp = tempdir()?;
+        let original = temp.path().join("rollout.jsonl");
+        let previous_active = temp.path().join("rollout.jsonl.clm-displaced");
+        let index = temp.path().join("thread.sqlite");
+        let previous_index = temp.path().join("thread.sqlite.clm-disabled");
+        std::fs::write(&original, b"rehydrated-full")?;
+        std::fs::write(&previous_active, b"previous-active")?;
+        std::fs::write(&previous_index, b"previous-index")?;
+
+        let preserved = restore_rehydrated_managed_state(
+            &original,
+            &previous_active,
+            &index,
+            &previous_index,
+            42,
+        )?;
+
+        assert_eq!(std::fs::read(&original)?, b"previous-active");
+        assert_eq!(std::fs::read(&index)?, b"previous-index");
+        assert_eq!(preserved.len(), 1);
+        assert_eq!(std::fs::read(&preserved[0])?, b"rehydrated-full");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_refresh_restores_every_previous_generation_owner() -> Result<()> {
+        let temp = tempdir()?;
+        let runtime_root = temp.path().join("runtime");
+        let thread_id = "thread-refresh-test";
+        let original = temp.path().join("rollout.jsonl");
+        let previous_active = temp.path().join("rollout.jsonl.clm-displaced");
+        let index = runtime_root
+            .join("Data")
+            .join("Indexes")
+            .join(format!("{thread_id}.sqlite"));
+        let previous_index = index.with_extension("sqlite.clm-disabled");
+        let vault = runtime_root
+            .join("Data")
+            .join("Vault")
+            .join("Codex")
+            .join(thread_id);
+        let cycle_vault = vault.with_file_name(format!("{thread_id}.clm-cycle-42"));
+        let rollback = sidecar_path(&original, "clm-rollback")?;
+        let cycle_rollback = sidecar_path(&rollback, "clm-cycle-42")?;
+        let candidate = sidecar_path(&original, "clm-new")?;
+        let staging_index = runtime_root
+            .join("Data")
+            .join("Indexes")
+            .join(format!("{thread_id}.sqlite.clm-new"));
+
+        for parent in [
+            original.parent(),
+            index.parent(),
+            vault.parent(),
+            cycle_vault.parent(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::create_dir_all(&vault)?;
+        std::fs::create_dir_all(&cycle_vault)?;
+        std::fs::write(vault.join("manifest.json"), b"failed-new-vault")?;
+        std::fs::write(cycle_vault.join("manifest.json"), b"previous-vault")?;
+        std::fs::write(&original, b"failed-new-active")?;
+        std::fs::write(&previous_active, b"previous-active")?;
+        std::fs::write(&index, b"failed-new-index")?;
+        std::fs::write(&previous_index, b"previous-index")?;
+        std::fs::write(&rollback, b"failed-rehydrated-rollback")?;
+        std::fs::write(&cycle_rollback, b"previous-rollback")?;
+        std::fs::write(&candidate, b"failed-candidate")?;
+        std::fs::write(&staging_index, b"failed-staging-index")?;
+
+        let preserved = restore_previous_refresh_generation(
+            &original,
+            &previous_active,
+            &index,
+            &previous_index,
+            &vault,
+            &cycle_vault,
+            &rollback,
+            &cycle_rollback,
+            &runtime_root,
+            thread_id,
+            42,
+        )?;
+
+        assert_eq!(std::fs::read(&original)?, b"previous-active");
+        assert_eq!(std::fs::read(&index)?, b"previous-index");
+        assert_eq!(
+            std::fs::read(vault.join("manifest.json"))?,
+            b"previous-vault"
+        );
+        assert_eq!(std::fs::read(&rollback)?, b"previous-rollback");
+        assert!(!previous_active.exists());
+        assert!(!previous_index.exists());
+        assert!(!cycle_vault.exists());
+        assert!(!cycle_rollback.exists());
+        assert_eq!(preserved.len(), 6);
+        assert!(preserved.iter().all(|path| path.exists()));
+        Ok(())
+    }
 }
