@@ -12,6 +12,7 @@ use std::process::Stdio;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -22,6 +23,8 @@ use serde_json::Value;
 use serde_json::json;
 use sha2::Digest;
 use sha2::Sha256;
+
+use crate::path_safety::remove_dir_all_scoped;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -35,6 +38,7 @@ pub struct OracleProjection {
     pub oracle_version: String,
     pub thread: Value,
     pub turns: Vec<Value>,
+    pub resume_duration_ms: u128,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -97,7 +101,8 @@ impl CodexOracle {
         std::fs::write(home.join("config.toml"), "")?;
 
         let result = self.project_inner(&rollout, &thread_id, &home, &oracle_version);
-        let cleanup = std::fs::remove_dir_all(&home);
+        let cleanup_root = self.runtime_root.join("Work").join("Oracle");
+        let cleanup = remove_dir_all_scoped(&home, &cleanup_root, "Oracle temporary HOME cleanup");
         match (result, cleanup) {
             (Ok(projection), Ok(())) => Ok(projection),
             (Ok(_), Err(error)) => {
@@ -111,6 +116,7 @@ impl CodexOracle {
         &self,
         rollout: &Path,
         codex_home: &Path,
+        force: bool,
     ) -> Result<NativeCompactionReport> {
         let rollout = std::fs::canonicalize(rollout)
             .with_context(|| format!("failed to resolve {}", rollout.display()))?;
@@ -119,7 +125,7 @@ impl CodexOracle {
         let thread_id = read_rollout_thread_id(&rollout)?;
         let before = scan_native_checkpoints(&rollout)?;
         let sha256_before = sha256_file(&rollout)?;
-        if before.checkpoint_count > 0 {
+        if before.checkpoint_count > 0 && !force {
             return Ok(NativeCompactionReport {
                 thread_id,
                 source_path: rollout.to_string_lossy().into_owned(),
@@ -134,8 +140,10 @@ impl CodexOracle {
         }
         self.compact_inner(&rollout, &thread_id, &codex_home)?;
         let after = scan_native_checkpoints(&rollout)?;
-        if after.checkpoint_count == 0 {
-            bail!("official compaction completed without persisting a native checkpoint");
+        let checkpoint_advanced = after.checkpoint_count > before.checkpoint_count
+            || after.latest_checkpoint_offset > before.latest_checkpoint_offset;
+        if !checkpoint_advanced {
+            bail!("official compaction completed without persisting a newer native checkpoint");
         }
         let sha256_after = sha256_file(&rollout)?;
         Ok(NativeCompactionReport {
@@ -147,7 +155,11 @@ impl CodexOracle {
             sha256_after,
             checkpoint_count_before: before.checkpoint_count,
             checkpoint_count_after: after.checkpoint_count,
-            state: "native_checkpoint_created".to_string(),
+            state: if force {
+                "native_checkpoint_refreshed".to_string()
+            } else {
+                "native_checkpoint_created".to_string()
+            },
         })
     }
 
@@ -202,7 +214,7 @@ impl CodexOracle {
             String::from_utf8_lossy(&bytes).into_owned()
         });
 
-        let run = (|| -> Result<Value> {
+        let run = (|| -> Result<(Value, u128)> {
             write_message(
                 &mut input,
                 &json!({
@@ -221,6 +233,7 @@ impl CodexOracle {
             let initialize = receive_response(&line_rx, &json!(1), self.timeout)?;
             ensure_success(&initialize, "initialize")?;
             write_message(&mut input, &json!({"method": "initialized", "params": {}}))?;
+            let resume_started = Instant::now();
             write_message(
                 &mut input,
                 &json!({
@@ -234,14 +247,16 @@ impl CodexOracle {
                     }
                 }),
             )?;
-            receive_response(&line_rx, &json!(2), self.timeout)
+            let response = receive_response(&line_rx, &json!(2), self.timeout)?;
+            Ok((response, resume_started.elapsed().as_millis()))
         })();
 
         drop(input);
         terminate(&mut child);
         let _ = stdout_thread.join();
         let stderr = stderr_thread.join().unwrap_or_default();
-        let response = run.with_context(|| format!("Codex oracle stderr:\n{stderr}"))?;
+        let (response, resume_duration_ms) =
+            run.with_context(|| format!("Codex oracle stderr:\n{stderr}"))?;
         ensure_success(&response, "thread/resume")?;
         let thread = response
             .get("result")
@@ -265,6 +280,7 @@ impl CodexOracle {
             oracle_version: oracle_version.to_string(),
             thread,
             turns,
+            resume_duration_ms,
         })
     }
 

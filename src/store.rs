@@ -659,6 +659,39 @@ impl IndexedRollout {
         })
     }
 
+    pub fn read_all_api_turns(&self, thread_id: &str) -> Result<Vec<Value>> {
+        let report = self.api_projection_report(thread_id)?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT turn_id, turn_json FROM api_turns ORDER BY turn_ordinal ASC")?;
+        let mut rows = statement.query([])?;
+        let mut turns = Vec::with_capacity(usize::try_from(report.turns_total)?);
+        while let Some(row) = rows.next()? {
+            let stored_turn_id: String = row.get(0)?;
+            let turn_json: String = row.get(1)?;
+            let turn: Value = serde_json::from_str(&turn_json)
+                .with_context(|| format!("invalid stored API turn {stored_turn_id}"))?;
+            let projected_turn_id = turn
+                .get("id")
+                .and_then(Value::as_str)
+                .context("stored API turn has no id")?;
+            if projected_turn_id != stored_turn_id {
+                bail!(
+                    "stored API turn id mismatch: row {stored_turn_id}, payload {projected_turn_id}"
+                );
+            }
+            turns.push(turn);
+        }
+        if turns.len() as u64 != report.turns_total {
+            bail!(
+                "full API projection count mismatch: expected {}, materialized {}",
+                report.turns_total,
+                turns.len()
+            );
+        }
+        Ok(turns)
+    }
+
     pub fn api_projection_report(&self, thread_id: &str) -> Result<ApiProjectionReport> {
         self.ensure_api_projection(thread_id)?;
         self.connection

@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'CLM.PathSafety.ps1')
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $manifest = Get-Content -LiteralPath (Join-Path $projectRoot 'Cargo.toml') -Raw
 $versionMatch = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"')
@@ -22,11 +23,10 @@ $zip = Join-Path $artifactRoot "$packageName.zip"
 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
 if (Test-Path -LiteralPath $stage) {
     $resolvedStage = [IO.Path]::GetFullPath($stage)
-    $resolvedArtifacts = [IO.Path]::GetFullPath($artifactRoot)
-    if (-not $resolvedStage.StartsWith($resolvedArtifacts, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Unsafe release cleanup target: $resolvedStage"
-    }
-    Remove-Item -LiteralPath $resolvedStage -Recurse -Force
+    Remove-ClmDirectoryTreeSafely `
+        -TargetPath $resolvedStage `
+        -AllowedRoot $artifactRoot `
+        -Purpose 'release staging cleanup'
 }
 if (Test-Path -LiteralPath $zip) {
     Remove-Item -LiteralPath $zip -Force
@@ -52,6 +52,15 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'SECURITY.md') -Destination $stag
 New-Item -ItemType Directory -Path (Join-Path $stage 'docs') | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\CODEX_DESKTOP_TROUBLESHOOTING.md') `
     -Destination (Join-Path $stage 'docs')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\HEALTH_REPORT.md') `
+    -Destination (Join-Path $stage 'docs')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\SKILLS_LIST_CACHE.md') `
+    -Destination (Join-Path $stage 'docs')
+New-Item -ItemType Directory -Path (Join-Path $stage 'tools') | Out-Null
+Copy-Item -LiteralPath (Join-Path $projectRoot 'tools\CLM.PathSafety.ps1') `
+    -Destination (Join-Path $stage 'tools')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'tools\Get-CodexClmHealth.ps1') `
+    -Destination (Join-Path $stage 'tools')
 
 $officialBinary = Get-ChildItem -LiteralPath $stage -File -Recurse |
     Where-Object { $_.Name -ieq 'codex.exe' }

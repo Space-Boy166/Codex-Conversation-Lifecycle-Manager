@@ -1,6 +1,6 @@
 [package]
 name = "conversation-lifecycle-manager"
-version = "0.1.0"
+version = "0.1.1-alpha.1"
 edition = "2024"
 license = "MIT"
 description = "Lossless indexed lifecycle runtime for large Codex conversations"
@@ -17,6 +17,14 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile = "3.23"

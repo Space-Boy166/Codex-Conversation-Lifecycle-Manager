@@ -40,7 +40,14 @@ task, change its id, or relocate its canonical active path.
 - Rehydration: byte-faithful reconstruction of the original full rollout order.
 
 Native Archive and cold segmentation are independent. Performance governance
-does not require hiding a task.
+does not require hiding a task. Archive is also a de-layering boundary: a
+managed task that becomes natively archived is losslessly rehydrated to a full
+native rollout and its lazy index is disabled while Codex has no owner. Only a
+later native unarchive can return it to active-layer eligibility. Rehydration
+writes a durable receipt that binds the restored full-history hash to the
+disabled index and displaced compact candidate. Reactivation verifies that
+receipt, preserves the retired Archive generation, and creates a fresh manifest,
+Vault source, rollback, and index instead of reusing historical paths.
 
 ## 4. Four memory layers
 
@@ -59,6 +66,35 @@ selects the much smaller model-visible checkpoint and suffix.
 
 Preserve the latest native replacement-history checkpoint and every later
 record exactly. Never generate a substitute checkpoint externally.
+
+This checkpoint requirement belongs to the current compatibility transaction,
+not to model inference as a universal law. The current official backend can
+reconstruct continuation from either the complete rollout or an official
+replacement-history checkpoint plus its exact suffix. Removing a prefix without
+either representation may still leave parseable JSONL, but it silently removes
+model-visible state. A future native segmented backend may store pre-checkpoint
+records in separate files without semantic loss only when the official context
+builder can resolve the exact required items across those segments.
+
+Semantic and host-performance control stay independent. Codex decides when its
+model context requires Compact. CLM may reduce Resume I/O only around a useful
+checkpoint that already exists naturally; bytes, elapsed time, or host pressure
+must never force semantic compaction.
+
+An explicitly approved optional policy may externalize Base64 `input_image`
+payloads that the native Compact itself retained. It stores exact decoded image
+bytes by SHA-256 and replaces only the active checkpoint copy with an explicit
+local reference. The full rollout archive and rollback remain byte-exact. This
+is not semantically identical to the default checkpoint: old images become
+on-demand model inputs instead of automatic inputs on every Resume, so the
+policy is opt-in and persists across later refresh generations once selected.
+
+The current release deliberately implements no Compact decision engine. It
+consumes useful checkpoints that Codex has already produced and otherwise
+defers the storage rotation unchanged. The manual official-Compact command is
+retained as an operator capability, but CLM lifecycle maintenance, file-size
+thresholds, and Resume measurements never call it. A later semantic policy may
+be designed separately; it is not part of lazy-history or exit maintenance.
 
 ### Project continuity
 
@@ -104,20 +140,84 @@ bundled app-server path. That launch seam is now proven end to end without
 changing the signed package. CLM points it at a transparent proxy, and the proxy
 starts a hash-pinned official backend copied with its companion executables.
 
-For every thread, the installed proxy observes the bounded initial page's older
-cursor and stops Desktop's first automatic follow-up request once. A
-later request for the same cursor remains valid. For an unmanaged thread that
-later page is forwarded to the exact official backend. For a managed thread the
-proxy additionally:
+Desktop has used two lazy-history request shapes across Store releases. Older
+builds put a bounded `initialTurnsPage` inside `thread/resume`. The local-host
+branch in Store package `26.715.8383.0` instead sends `excludeTurns: true`, waits
+for the Resume skeleton, and then requests the first five full turns through a
+separate `thread/turns/list`. The proxy accepts both shapes. When the initial
+page is inline, it observes that page's older cursor and stops Desktop's first
+automatic follow-up request once; a later request for the same cursor remains
+valid. For an unmanaged thread a later page is forwarded to the exact official
+backend. For a managed thread the proxy additionally:
 
 1. lets the official backend resume only the compact active rollout;
 2. imports the bounded mutable tail returned by that backend;
 3. clears `thread.turns` when the client requested `excludeTurns`;
-4. injects the requested indexed `initialTurnsPage`;
-5. serves later `thread/turns/list` pages directly from SQLite.
+4. injects the requested indexed `initialTurnsPage` when the client used the
+   inline shape;
+5. otherwise lets Desktop request the first and later pages through
+   `thread/turns/list`, served directly from SQLite.
 
 The proxy does not patch `app.asar`, the Store package, Git, or shared Codex
 state. Store and protocol versions remain a compatibility gate on every update.
+
+### Workspace restart continuity
+
+Conversation storage continuity and desktop workspace continuity are separate
+planes. The proxy keeps one task fast and lossless; it cannot make Electron
+remember ten BrowserWindows across a process restart.
+
+The workspace manager therefore records a metadata-only map from exact active
+thread ids to top-level HWND geometry and Windows virtual desktop GUIDs. It
+resolves task identity from the accessible Codex header against read-only
+`state_5.sqlite` plus `session_index.jsonl`, fixes its own process to Per-Monitor
+DPI Aware V2, and refuses ambiguous mappings. On restore it uses
+`codex://threads/<id>`, the signed client's own **Open in new window** command,
+public `IVirtualDesktopManager`, and `SetWindowPos`. It never patches the Store
+package or edits sidebar/task state.
+
+This plane has its own acceptance boundary: every Codex owner must be absent,
+the monitor and virtual-desktop topology must match, and the final live task,
+desktop, rectangle, and count map must equal the snapshot. Partial windows
+created by a failed attempt are closed only by their exact newly captured HWND.
+See [Codex Workspace Restore](WORKSPACE_RESTORE.md).
+
+### Bounded Optimistic Resume
+
+Managed lazy paging removes transcript-size work, but the signed Desktop still
+waits roughly 2.5 seconds for the official backend to establish a resumed
+thread. CLM may hide that fixed wait only for an explicitly enabled managed
+canary with a verified official response cache:
+
+1. The first matching Resume always takes the ordinary backend path. After
+   success, CLM stores the official result skeleton without turns or an initial
+   history page.
+2. The cache is bound to the thread id, canonical backend identity and metadata,
+   Codex Home/config hash, backend arguments, and stable Resume parameters. Any
+   mismatch is a cold fallback, never a synthesized response.
+3. A warm Resume receives that official skeleton immediately. For the inline
+   protocol shape CLM also attaches the newest bounded SQLite page. For the
+   current local-host shape Desktop immediately follows with
+   `thread/turns/list`, which CLM serves from SQLite without waiting for the real
+   Resume. The same real Resume is still forwarded to the official backend; its
+   duplicate client response is swallowed after CLM refreshes the mutable
+   active tail and cache.
+4. `turn/start` for that thread is held until the real Resume owns the backend
+   session. The gate releases at most once in FIFO order and is bounded to four
+   turns, 1 MiB, and 15 seconds. Failure or timeout returns explicit errors.
+
+This is perceived-latency speculation, not fake backend readiness. It is off by
+default and configured from `<runtime-root>\Data\optimistic-resume.json` as
+`disabled`, an exact `canary` thread-id set, or `all_managed`. Production starts
+with a small canary. A proxy crash after backend acceptance remains outside a
+durable exactly-once guarantee; CLM does not claim transactional Send across
+process failure.
+
+Resume timing schema v3 records the original `excludeTurns` value, whether an
+inline initial page was present, whether policy enabled the thread, and a
+content-free cache outcome such as `hit`, `cache_file_missing`,
+`cache_environment_mismatch`, or `cache_request_mismatch`. Cache read, parse,
+metadata, and size failures always fall back to the official Resume path.
 
 Replacing packaged binaries or patching `app.asar` in place is prohibited.
 
@@ -129,27 +229,72 @@ pressure relief. It is not the desired final user experience.
 1. Confirm that Codex Desktop and all owning app-server processes are closed.
 2. Snapshot thread registry, file identity, size, timestamps, and hashes.
 3. Group real user tasks by canonical project root.
-4. For a missing or stale checkpoint, run native maintenance compaction serially.
-5. Stop the maintenance app-server and rescan the resulting rollout.
-6. Run continuity extraction against the still-complete original history.
-7. Reconcile each project group against live files, Git, tests, and handoffs.
-8. Apply or preserve the approved project-level continuation writeback.
-9. Stream the dead prefix into immutable cold segments.
-10. Build a candidate containing canonical metadata, latest checkpoint, and suffix.
-11. Prove parse validity, byte identity, ordering, and reconstructed equivalence.
-12. Replace the active path transactionally and retain a same-volume rollback.
-13. Reopen one canary task and verify UI identity, model continuity, and appends.
-14. Only then process another bounded batch.
+4. Require an existing useful native Compact checkpoint; leave tasks without
+   one unchanged unless the user separately invokes official Compact.
+5. Run continuity extraction against the still-complete original history.
+6. Reconcile each project group against live files, Git, tests, and handoffs.
+7. Apply or preserve the approved project-level continuation writeback.
+8. Stream the dead prefix into immutable cold segments.
+9. Build a candidate containing canonical metadata, latest checkpoint, and suffix.
+10. Prove parse validity, byte identity, ordering, and reconstructed equivalence.
+11. Replace the active path transactionally and retain a same-volume rollback.
+12. Reopen one canary task and verify UI identity, model continuity, and appends.
+13. Only then process another bounded batch.
+
+### Managed generation refresh
+
+Lazy paging bounds the archived prefix, but it does not make the active JSONL
+permanently small. New turns, tool results, reasoning records, and later native
+compaction records continue appending to that active file. A long-running
+managed task can therefore become expensive to resume again even though its old
+pages are still served lazily from the sidecar index.
+
+`refresh-migration` is the offline generation-rotation transaction for that
+case. It losslessly rehydrates the archived prefix plus every post-activation
+record, prepares a new index and candidate around the newest native checkpoint,
+and activates the candidate only when it is smaller than the active file it
+replaces. The previous manifest, rollback, compact active file, and index remain
+in timestamped evidence paths. If preparation, projection, activation, or
+verification fails, the previous managed generation is restored by exact file
+ownership rather than deleted.
+
+Refresh is not a watcher and never mutates a live rollout. It requires a
+controlled Codex shutdown and a newer useful native checkpoint. See
+`docs/MANAGED_TAIL_REFRESH.md` for the command, transaction states, and
+acceptance evidence.
+
+### Automation boundary
+
+The public alpha exposes refresh as an explicit offline transaction. It does
+not install a polling watcher, close Codex, relaunch the app, or schedule
+maintenance for the user.
+
+The machine-local event lifecycle avoids polling by waiting on one exact Codex
+root process handle, then verifying that no exact Codex owner remains before it
+activates eligible originals and inspects managed manifests. It retains a
+session marker as attempt evidence and retains the previous generation so an
+interrupted exit cannot leave the active task between generations. The marker
+is never a startup gate. A user launch requests cancellation, waits only for the
+current atomic task, and then owns the reopen; an unexpected failure retires the
+marker into evidence and also releases startup. Public packaging remains a
+separate gate.
+
+Automation must rotate only around a newer useful checkpoint that Codex
+produced naturally. If none exists, it must defer without changing the rollout.
+Host performance must never trigger semantic native Compact, and process
+control must never broaden into terminating unrelated Codex windows.
 
 ## 9. Thread classification
 
 - Fresh checkpoint: rotate directly after continuity audit.
-- Stale checkpoint: native compact, verify, audit, then rotate.
-- No checkpoint: native compact, verify, audit, then rotate.
+- Stale checkpoint: defer until Codex naturally writes a newer useful Compact.
+- No checkpoint: leave the rollout byte-for-byte unchanged.
 - Legacy checkpoint without replacement history: do not rotate in v0.
 - Corrupt, partial, or ambiguous history: do not rotate.
 - Active/in-flight owner: do not inspect as a write candidate.
-- Finished native-archived task: index as cold data; no automatic reactivation.
+- Finished native-archived task: ledger-only during active maintenance; only a
+  separate explicit compatibility transaction may rehydrate it, and only a
+  later native unarchive plus a verified receipt may start a new generation.
 
 ## 10. Continuity auditor
 
@@ -180,11 +325,18 @@ Data/Vault/Codex/<thread-id>/
   segments/
     segment-000001.jsonl.zst
   attachments/
+    compact-images/
+      tx-<prepared-unix-ms>-<candidate-sha-prefix>/
+        <content-sha256>.<image-extension>
+  compact-images.json
   index.sqlite
 ```
 
 Segments are immutable. The manifest stores uncompressed and stored hashes.
 Compression is an implementation choice and must never block exact recovery.
+The Compact-image manifest also records every source occurrence by JSONL record
+ordinal and RFC 6901 JSON Pointer. Thread, transaction, and content-hash layers
+must never be flattened or mixed across conversations.
 An upstream implementation may keep equivalent indexed segments under the
 Codex-owned data root; the logical contract matters more than this fallback
 vault's physical path.
@@ -198,6 +350,30 @@ does not run a watcher, MCP server, or background indexer.
 
 Retrieval triggers include references such as "earlier", "the previous image",
 "the decision from last week", or a checkpoint that points to archived detail.
+
+The planned retrieval contract is hierarchical rather than a top-k raw-chunk
+dump:
+
+1. An always-small history map advertises that exact indexed evidence exists.
+2. A thread timeline summary identifies relevant phases, decisions, constraints,
+   artifacts, and unresolved work.
+3. Bounded episode summaries narrow the search to exact turn ranges.
+4. Raw turns, tool records, values, quotations, and attachments are materialized
+   only when exact evidence is required.
+
+Summaries are navigation artifacts, not native Compact records and not evidence
+authorities. Every summary node keeps source ranges, timestamps, hashes, and
+children so retrieval can descend to immutable raw records. Full-text search
+locates exact paths, numbers, commands, and wording. Embedding similarity may
+locate paraphrased concepts, but it only proposes candidates; it never replaces
+raw evidence or enters model context by itself.
+
+For Codex compatibility, bounded high-confidence recall can be injected at a
+turn boundary and deeper retrieval remains explicit. For UAF integration, CLM
+owns lossless storage, indexing, provenance, and bounded retrieval; UAF owns the
+decision to recall, the evidence budget, and what enters each agent's active
+context. This keeps current-goal context small while making older project memory
+available on demand.
 
 ## 13. Native UI feasibility
 
@@ -291,11 +467,18 @@ retry cursor rewrites or synthetic placeholders when the missing capability is
 frontend ownership. `docs/UPSTREAM_FRONTEND_BLOCKER.md` records the rejected
 routes, official unlock conditions, and exact reactivation checks.
 
-Managed eager full reads and forks are currently blocked. The compact active
-rollout is sufficient for model continuation but is not a full fork source;
-silently forwarding those operations would produce incomplete results. A future
-rehydration transaction must materialize an exact temporary full source before
-those operations are enabled.
+Managed explicit full reads use the complete ordered SQLite API-turn projection,
+not the compact active rollout. For `thread/read(includeTurns=true)`, the proxy
+asks the official backend for metadata only, verifies the returned thread id,
+then injects every projected turn after row-id and total-count checks. This
+restores API and task-tool compatibility without changing bounded Resume or
+manual older-page loading. It can intentionally materialize the whole history
+for that one explicit caller, so it is not the ordinary Desktop navigation path.
+
+Managed forks remain blocked. The compact active rollout and API-turn projection
+are sufficient for continuation and read APIs but are not a byte-exact native
+fork source. A future rehydration transaction must materialize an exact temporary
+full rollout before fork is enabled.
 
 The Store also broadcast-falls back child-agent `turn/started`,
 `turn/completed`, `item/started`, and `item/completed` notifications when no
@@ -311,6 +494,27 @@ A minimal native child completed and closed while its parent retained the
 expected completion notification. User-visible pointer acceptance and a raw
 post-flush Store-log zero-error check remain open gates.
 
+That filter does not provide per-renderer isolation for root tasks. Desktop
+funnels every renderer through one app-server stream. A request can prove that
+the shared Desktop client owns a thread, but neither the request at the proxy
+seam nor a later backend notification carries the originating
+`rendererWebContentsId`. Once any window has referenced a root thread, dropping
+its events would also drop them for the real owner. The signed Electron main
+process still chooses whether to route or broadcast that one output stream.
+
+The 2026-07-19 Store log confirms this remaining boundary: 1,374 root-task
+notifications reached renderers that reported `unknown conversation`. CLM now
+reports that count but does not pretend to fix it. Safe root-task isolation
+requires either a renderer/client subscription identity in the app-server
+protocol or correct owner routing inside the signed Desktop main process.
+
+Repeated skill discovery is separable because it is an ordinary request and
+response on the proxy seam. The development proxy caches successful identical
+`skills/list` responses for at most 30 seconds and eight parameter sets,
+rewrites only the caller request id, bypasses on `forceReload=true`, invalidates
+on skill/plugin mutations, rejects errors and stale generations, and bounds
+pending bookkeeping. See `docs/SKILLS_LIST_CACHE.md`.
+
 ## 14. Target native implementation
 
 The target Codex store appends bounded chunks and maintains an index from thread,
@@ -321,9 +525,41 @@ a virtual list. Exact native browsing is the target, not a future bonus.
 The compatibility vault still retains full rehydration so no migration decision
 can strand history or bind recovery to one client implementation.
 
-## 15. Hard acceptance gates
+## 15. Deferred live-maintenance ladder
+
+The current compatibility release finishes the offline foundation before it
+attempts a transparent running-process refresh. Its accepted baseline is:
+
+1. consume an existing useful native Compact;
+2. preserve exact archived history and its SQLite projection;
+3. serve bounded Resume and lazy UI pages from the managed generation;
+4. refresh the mutable active tail only after Codex owners exit;
+5. retain a complete previous generation and verified rollback.
+
+Live maintenance remains a staged future route:
+
+1. **Shadow sync:** on an existing `turn/completed` event, incrementally index
+   only complete appended records and prepare read-only refresh evidence. This
+   does not replace the active rollout or claim to free live process memory.
+2. **Visible backend recycle canary:** after proving no in-flight turn, stop the
+   exact official app-server child, rotate around an existing natural Compact,
+   restart it, and verify protocol initialization, append continuity, paging,
+   notifications, and rollback while the Desktop window remains visible.
+3. **Transparent backend recycle:** queue and replay bounded client requests so
+   the proven recycle no longer requires user coordination.
+4. **Native bounded runtime:** move segmentation and in-memory eviction into the
+   owning backend and virtualized frontend. This is the only route that can keep
+   disk, app-server RAM, and renderer RAM bounded without periodic recycling.
+
+No later stage may be described as seamless until the preceding stage passes a
+real Store canary. Until that ownership contract is proven, the hard rule remains
+zero active-rollout writes while any Codex owner is alive.
+
+## 16. Hard acceptance gates
 
 - Zero writes while an owner process is alive.
+- Zero maintenance result, marker, or failed recovery attempt may block a user
+  launch after the current atomic task releases its mutex.
 - Zero synthetic checkpoints.
 - Zero trim without a continuity card.
 - Zero trim after failed project reconciliation.
