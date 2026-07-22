@@ -90,6 +90,33 @@ fn official_cursor_and_item_views_are_preserved() -> Result<()> {
 }
 
 #[test]
+fn explicit_full_read_materializes_every_exact_api_turn() -> Result<()> {
+    let temp = tempdir()?;
+    let source = temp.path().join("source.jsonl");
+    let db = temp.path().join("index.sqlite");
+    std::fs::write(&source, "fixture\n")?;
+    let thread_id = "00000000-0000-7000-8000-000000000126";
+    let turns: Vec<_> = (0..205).map(turn).collect();
+
+    let mut index = IndexedRollout::open(&db)?;
+    index.replace_api_projection(
+        &source,
+        thread_id,
+        "full-read-hash",
+        "codex-cli 0.144.2",
+        &turns,
+    )?;
+
+    let materialized = index.read_all_api_turns(thread_id)?;
+    assert_eq!(materialized.len(), 205);
+    assert_eq!(materialized[0]["id"], "turn-000");
+    assert_eq!(materialized[204]["id"], "turn-204");
+    assert_eq!(materialized[37]["items"].as_array().unwrap().len(), 3);
+    assert_eq!(materialized, turns);
+    Ok(())
+}
+
+#[test]
 fn failed_projection_replacement_rolls_back_completely() -> Result<()> {
     let temp = tempdir()?;
     let source = temp.path().join("source.jsonl");

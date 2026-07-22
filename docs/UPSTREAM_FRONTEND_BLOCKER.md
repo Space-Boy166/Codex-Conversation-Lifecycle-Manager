@@ -20,6 +20,12 @@ paging reaches the exact first message, and requested managed pages return in
 Status: `blocked_upstream`. This is not a failed local implementation and not a
 claim that the missing UX is fixed.
 
+A separate 2026-07-19 proxy fix restores explicit managed
+`thread/read(includeTurns=true)` from the complete SQLite API-turn projection.
+That repairs API/task-tool compatibility only. It does not make the signed
+frontend render unloaded navigation markers, direct target reveal, or visible
+upper-boundary loading state, so the frontend status here remains unchanged.
+
 ## Proven ownership boundary
 
 Read-only inspection of the current Store bundle established that:
@@ -90,3 +96,24 @@ When an official unlock appears:
 
 Until those checks are possible, keep the installed CLM runtime unchanged and
 treat this native-UX track as parked.
+
+## Cross-renderer root-event routing
+
+Read-only evidence on 2026-07-19 adds a second signed-client boundary. The
+Store log records request origins as `originWebcontentsId`, but that identity is
+owned by the Electron main process and is not present on the shared app-server
+JSON stream seen by CLM. Backend root-task notifications contain a thread id,
+not a destination renderer id or subscription token.
+
+CLM can safely drop the four stream-event variants for a child thread that no
+Desktop request has ever referenced. It cannot safely drop an event for a root
+thread once any renderer has referenced it: the proxy would also starve the
+actual owner. Writing the event once to stdout then leaves the signed main
+process free to broadcast it to every renderer, which produced 1,374
+`unknown conversation` deliveries in the audited Store log.
+
+Do not claim root-event isolation from the current global owned-thread set. Do
+not patch `app.asar`, inject renderer JavaScript, or fabricate routing metadata.
+Reopen this boundary only if the official protocol exposes a per-renderer
+connection/subscription identity, or the signed main process demonstrably stops
+broadcasting root events to non-owners.

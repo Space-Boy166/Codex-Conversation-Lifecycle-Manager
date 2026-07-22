@@ -7,9 +7,14 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::bail;
+use rusqlite::Connection;
+use rusqlite::OpenFlags;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::MigrationManifest;
 use crate::read_rollout_thread_id;
@@ -36,6 +41,48 @@ pub enum ConversationLifecycleState {
     LazyHistoryEnabled,
     Restored,
     NeedsInspection,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissingFleetConversation {
+    pub thread_id: String,
+    pub title: String,
+    pub rollout_path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveLedgerEntry {
+    pub thread_id: String,
+    pub title: String,
+    pub updated_at: i64,
+    pub archived_at: Option<i64>,
+    pub rollout_path: String,
+    pub cwd: String,
+    pub source: String,
+    pub thread_source: Option<String>,
+    pub rollout_exists: bool,
+    pub rollout_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetInventoryReport {
+    pub database_threads: u64,
+    pub spawn_children: u64,
+    pub active_top_level_user_threads: u64,
+    pub archived_top_level_user_threads: u64,
+    pub archived_existing_rollouts: u64,
+    pub archive_ledger_sha256: String,
+    pub existing_rollouts: u64,
+    pub existing_total_bytes: u64,
+    pub selected_rollouts: u64,
+    pub selected_total_bytes: u64,
+    pub missing_archived_rollouts: Vec<MissingFleetConversation>,
+    pub missing_rollouts: Vec<MissingFleetConversation>,
+    pub archive_ledger: Vec<ArchiveLedgerEntry>,
+    pub conversations: Vec<ConversationInventoryItem>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +161,197 @@ pub fn scan_codex_conversations(
             .then_with(|| left.title.cmp(&right.title))
     });
     Ok(items)
+}
+
+/// Reads Codex's authoritative thread catalog without mutating it and returns
+/// only visible, top-level user tasks. Subagent children and archived tasks are
+/// deliberately excluded from fleet operations.
+pub fn scan_active_user_conversations(
+    codex_home: &Path,
+    runtime_root: &Path,
+    minimum_bytes: u64,
+) -> Result<FleetInventoryReport> {
+    let database_path = codex_home.join("state_5.sqlite");
+    if !database_path.is_file() {
+        bail!(
+            "Codex state database is missing: {}",
+            database_path.display()
+        );
+    }
+    let connection = Connection::open_with_flags(
+        &database_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .with_context(|| format!("failed to open {} read-only", database_path.display()))?;
+    let database_threads = u64::try_from(connection.query_row(
+        "SELECT COUNT(*) FROM threads",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?)
+    .context("thread count is negative")?;
+    let spawn_children = u64::try_from(connection.query_row(
+        "SELECT COUNT(*) FROM thread_spawn_edges",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?)
+    .context("spawn-child count is negative")?;
+
+    let mut archive_statement = connection.prepare(
+        "SELECT t.id, t.rollout_path, t.title, t.updated_at, t.archived_at,
+                t.cwd, t.source, t.thread_source
+         FROM threads AS t
+         LEFT JOIN thread_spawn_edges AS edge ON edge.child_thread_id = t.id
+         WHERE t.archived = 1
+           AND (t.thread_source = 'user' OR t.thread_source IS NULL OR t.thread_source = '')
+           AND edge.child_thread_id IS NULL
+         ORDER BY t.id ASC",
+    )?;
+    let archive_rows = archive_statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, Option<String>>(7)?,
+        ))
+    })?;
+    let mut archive_ledger = Vec::new();
+    let mut archived_existing_rollouts = 0_u64;
+    let mut missing_archived_rollouts = Vec::new();
+    for row in archive_rows {
+        let (thread_id, rollout_path, title, updated_at, archived_at, cwd, source, thread_source) =
+            row?;
+        let metadata = std::fs::metadata(&rollout_path)
+            .ok()
+            .filter(|metadata| metadata.is_file());
+        if metadata.is_some() {
+            archived_existing_rollouts += 1;
+        } else {
+            missing_archived_rollouts.push(MissingFleetConversation {
+                thread_id: thread_id.clone(),
+                title: title.clone(),
+                rollout_path: rollout_path.clone(),
+            });
+        }
+        archive_ledger.push(ArchiveLedgerEntry {
+            thread_id,
+            title,
+            updated_at,
+            archived_at,
+            rollout_path,
+            cwd,
+            source,
+            thread_source,
+            rollout_exists: metadata.is_some(),
+            rollout_bytes: metadata.map(|value| value.len()),
+        });
+    }
+    let archived_top_level_user_threads = archive_ledger.len() as u64;
+    let archive_ledger_sha256 =
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&archive_ledger)?));
+
+    let mut statement = connection.prepare(
+        "SELECT t.id, t.rollout_path, t.title, t.updated_at, t.cwd
+         FROM threads AS t
+         LEFT JOIN thread_spawn_edges AS edge ON edge.child_thread_id = t.id
+         WHERE t.archived = 0
+           AND (t.thread_source = 'user' OR t.thread_source IS NULL OR t.thread_source = '')
+           AND edge.child_thread_id IS NULL
+         ORDER BY t.updated_at DESC, t.id ASC",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+        ))
+    })?;
+
+    let mut active_top_level_user_threads = 0_u64;
+    let mut existing_rollouts = 0_u64;
+    let mut existing_total_bytes = 0_u64;
+    let mut missing_rollouts = Vec::new();
+    let mut conversations = Vec::new();
+    for row in rows {
+        let (thread_id, rollout_path, title, updated_at, cwd) = row?;
+        active_top_level_user_threads += 1;
+        let path = PathBuf::from(&rollout_path);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            _ => {
+                missing_rollouts.push(MissingFleetConversation {
+                    thread_id,
+                    title,
+                    rollout_path,
+                });
+                continue;
+            }
+        };
+        existing_rollouts += 1;
+        existing_total_bytes = existing_total_bytes.saturating_add(metadata.len());
+
+        let manifest_path = runtime_root
+            .join("Data")
+            .join("Vault")
+            .join("Codex")
+            .join(&thread_id)
+            .join("manifest.json");
+        let index_path = runtime_root
+            .join("Data")
+            .join("Indexes")
+            .join(format!("{thread_id}.sqlite"));
+        let (state, manifest) = classify_state(&path, &manifest_path, &index_path);
+        let effective_bytes = manifest
+            .as_ref()
+            .map(|value| value.source_bytes)
+            .unwrap_or_else(|| metadata.len());
+        if effective_bytes < minimum_bytes {
+            continue;
+        }
+        conversations.push(ConversationInventoryItem {
+            thread_id,
+            title,
+            updated_at: Some(updated_at.to_string()),
+            project_root: Some(cwd),
+            rollout_path,
+            bytes: effective_bytes,
+            active_bytes: metadata.len(),
+            state,
+            manifest_path: manifest
+                .as_ref()
+                .map(|_| manifest_path.to_string_lossy().into_owned()),
+        });
+    }
+    conversations.sort_by(|left, right| {
+        right
+            .bytes
+            .cmp(&left.bytes)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    let selected_total_bytes = conversations
+        .iter()
+        .fold(0_u64, |total, item| total.saturating_add(item.bytes));
+    Ok(FleetInventoryReport {
+        database_threads,
+        spawn_children,
+        active_top_level_user_threads,
+        archived_top_level_user_threads,
+        archived_existing_rollouts,
+        archive_ledger_sha256,
+        existing_rollouts,
+        existing_total_bytes,
+        selected_rollouts: conversations.len() as u64,
+        selected_total_bytes,
+        missing_archived_rollouts,
+        missing_rollouts,
+        archive_ledger,
+        conversations,
+    })
 }
 
 fn read_session_index(path: &Path) -> Result<HashMap<String, SessionIndexEntry>> {

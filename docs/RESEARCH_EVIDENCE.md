@@ -2,7 +2,8 @@
 
 ## Current machine observations
 
-- Running Codex Store package: `OpenAI.Codex` version `26.707.9564.0`.
+- Running Codex Store package during the 2026-07-22 compatibility inspection:
+  `OpenAI.Codex` version `26.715.8383.0`.
 - Store package `26.707.9981.0` was downloaded and staged on the same machine.
   Its bundled backend was byte-identical to `26.707.9564.0` at SHA-256
   `2CAACAD1F7B8B3E9B2527B9BFF9630CFBB30EC25D8D8C018C9D55A2BEC348032`.
@@ -21,10 +22,13 @@
 - The Store main process reads `CODEX_CLI_PATH` before choosing its bundled
   app-server. A transparent executable at that path was proven with real
   initialize, resume, notification, and turn-page traffic.
-- Store Desktop already requests `excludeTurns: true` plus an initial page of
-  five full turns. Without CLM's gate it then eagerly drains every older cursor;
-  with the installed one-shot gate it stops after the initial page and retries
-  the preserved cursor only when the user scrolls upward.
+- Read-only `app.asar` inspection of `26.715.8383.0` found two frontend branches.
+  Both request `excludeTurns: true`. A non-local branch still includes an
+  `initialTurnsPage` of five full turns, while the local-host branch omits that
+  field and calls `thread/turns/list` only after `thread/resume` returns. The
+  first Optimistic Resume implementation incorrectly required both
+  `excludeTurns` and an inline initial page, so production wrote cache files but
+  could never read them on this machine.
 - The managed live canary completed 27 manual older-page requests in 5-11 ms
   each, reached the exact top, and returned downward with zero page errors.
 - Unmanaged tasks no longer produce automatic page chains, but their initial

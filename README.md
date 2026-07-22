@@ -1,13 +1,13 @@
 # Codex Conversation Lifecycle Manager
 
-**让 Codex Desktop 中的超长对话能继续用，而不是切一下就瞎几把乱卡**
+**让超长对话继续用。别让历史变成惩罚。**
 
 CLM is a reversible Windows compatibility layer for affected Codex Desktop
 builds. It preserves task identity, exact recoverability, and on-demand access
 to older turns while replacing eager legacy resume with a bounded recent page
 backed by an indexed history source.
 
-历史对话应当是资产，而不是妨碍老子开发的累赘
+历史是资产，不是性能税。
 
 On the validated managed canary, sidebar task switching stopped producing the
 pointer stall, and a fresh renderer no longer inherited the complete page set
@@ -16,7 +16,7 @@ renderer work specifically from the managed long-history path.
 
 > ClosedAI fuck you
 
-> 只知道营销，不修用户体验，纯傻逼
+> OpenAI 只知道营销，不知道修用户体验，就是傻逼。
 
 ## 日常变化
 
@@ -29,6 +29,20 @@ CLM removes its eager Resume cost and prevents fresh renderers from inheriting
 already visited history pages; it does not repair the separate Electron
 GPU/compositor hitch that can occur before a brand-new blank window resumes any
 task.
+
+### 重启后恢复整套工作台
+
+CLM now includes a separate fail-closed workspace snapshot and restore tool for
+multi-window Codex use. It records each window's exact task id, virtual desktop,
+monitor, DPI, and physical-pixel rectangle. Once Codex has fully exited, it can
+reopen the same tasks through Codex's native **Open in new window** command and
+put each exact HWND back into place.
+
+The current machine baseline contains 10 windows across four of eight virtual
+desktops and two monitors. Capture, native duplicate-window creation, exact
+cleanup, preflight, and live 10/10 layout comparison have passed; the full
+zero-owner cold restore still requires one controlled acceptance restart. See
+[Codex Workspace Restore](docs/WORKSPACE_RESTORE.md).
 
 ## Why this exists
 
@@ -53,14 +67,14 @@ when you need to reopen it.
 
 ## 上游公开记录
 
-并非个例。
+这不是个例。
 
 CLM targets a documented upstream failure family rather than a hypothetical
 benchmark: independent reports across Codex surfaces and Windows builds describe
 unbounded thread metadata, eager long-history hydration, repeated full-state
 broadcast, and destructive resume-time failures.
 
-截至 2026-07-14，依旧没关闭
+截至 2026-07-14，它们仍未关闭。
 
 | Upstream report | What it establishes |
 | --- | --- |
@@ -78,12 +92,15 @@ repeatable Settings round-trip recovery narrows that adjacent failure toward
 renderer virtualization or observer lifecycle rather than slow SQLite or list
 RPC.
 
+边界要写清楚。
+
 These public reports do not establish one shared root cause, and CLM does not
 claim to solve every crash or renderer fault. CLM specifically mitigates the
 legacy long-history resume and replay path; Git Review storms, eager MCP
 ownership, local-state corruption, file-link crashes, and signed-frontend
 virtualization remain upstream or separate concerns.
 
+能修什么，就只说什么。
 
 ## What CLM changes
 
@@ -104,6 +121,15 @@ That gives you:
 - per-task opt-in instead of a silent conversion of every conversation;
 - a verified, lossless Restore path if CLM or a future Codex build is not a
   good fit.
+
+Native Archive is a hard lifecycle boundary. Archived tasks are stored as
+complete native rollouts with their lazy index disabled; CLM may layer them
+again only after Codex has natively unarchived them and they re-enter the active
+task flow. This keeps Archive readable by the official backend and avoids doing
+performance work for tasks the user is not opening. The de-layering transaction
+writes a durable receipt. If that task is later unarchived, CLM verifies the
+receipt and the full-history prefix, retires the old Archive generation without
+overwriting it, and creates a new active generation.
 
 Everything stays local. CLM does not upload conversations, patch the signed
 Store app, or redistribute the official Codex backend.
@@ -156,6 +182,69 @@ old messages remain intact. CLM calls this **Enable lazy history** in the user
 interface; the source uses "migration" for the underlying atomic data-layout
 transaction.
 
+### Active tail refresh
+
+懒加载不会让当前对话永远停在同一个文件大小。
+
+New turns still append to the active JSONL after CLM is enabled. When Codex has
+later produced a newer useful native replacement-history checkpoint, the source
+includes an offline `refresh-migration` transaction that rebuilds the complete
+generation, prepares a smaller active tail, retains the previous generation for
+rollback, and activates the candidate only when it is actually smaller. It does
+not force model Compact because of file size or system pressure.
+
+当前公开版 `CLMSetup` 不会自动关闭或重启 Codex，也不会安装轮询器。高级用户可在
+所有 Codex 窗口完全退出后手动刷新；命令、验证证据和回滚边界见
+[Managed Tail Refresh](docs/MANAGED_TAIL_REFRESH.md)。
+
+### Read-only health report
+
+Operators can reconcile the live proxy, lifecycle installation, managed-tail
+evidence, Store-log fan-out, `skills/list` latency, residual Review calls, and
+live Git count without changing machine state:
+
+```powershell
+.\tools\Get-CodexClmHealth.ps1 -AsJson
+```
+
+The ordinary report is metadata-only. Full archive hashing is an explicit
+`-DeepIntegrity` option because it can read many gigabytes. See
+[CLM Health Report](docs/HEALTH_REPORT.md).
+
+### Skills discovery containment
+
+The development proxy also bounds repeated identical `skills/list` work with a
+small in-memory cache. It keeps official `forceReload` behavior, invalidates on
+skill/plugin mutations, never stores errors, and caps both entries and pending
+request ids. The pinned-backend canary reduced an identical second request from
+51.980 ms to 0.799 ms. See
+[Bounded Skills Discovery Cache](docs/SKILLS_LIST_CACHE.md).
+
+This source feature is not effective in an already running installed proxy; it
+requires the same controlled full-exit upgrade and post-reopen acceptance as
+other proxy changes.
+
+### Offline release install without process control
+
+`tools\Install-CodexClmOfflineRelease.ps1` installs an already staged two-binary
+release only after every Codex/CLM owner is absent. It verifies the release
+manifest hash, candidate hashes, and the exact installed baseline; backs up both
+installed binaries; replaces both with same-directory atomic operations; and
+restores both previous hashes if a replacement fails. It contains no Codex
+close, process-stop, relaunch, or lifecycle-rearm path.
+
+`-PreflightOnly` is safe while Codex is running and reports
+`preflight_ready_waiting_for_natural_exit` without changing the runtime. The
+isolated contract test is:
+
+```powershell
+.\tests\Test-CodexClmOfflineRelease.ps1
+```
+
+The install result is still offline acceptance. A normal later user launch must
+pass real full-read, Resume, paging, append/send, title, Archive, and rollback
+checks before lifecycle mutation can be re-enabled.
+
 ## What we measured
 
 The current Windows canary established:
@@ -189,8 +278,11 @@ and should be checked with `CLMSetup doctor` after an update.
 - The current signed frontend hides its user-message navigation rail while
   history is incomplete and shows no loading indicator at the upper boundary.
   Manual upward scrolling still loads exact older pages.
-- Managed full-history reads and thread forks are blocked until CLM can safely
-  materialize a temporary complete source for those operations.
+- Explicit managed full-history reads are rebuilt from the exact ordered SQLite
+  API-turn projection. They intentionally materialize the whole response for
+  that caller and do not change normal bounded Resume or manual paging. Native
+  thread forks remain blocked until CLM can materialize an exact temporary full
+  rollout.
 - Unlimited upward traversal in one renderer is not proven to have bounded
   JavaScript retention because renderer eviction belongs to the Store frontend.
 - A Store update can change the private app-server protocol or
@@ -231,6 +323,10 @@ conversation-lifecycle-manager.exe inspect-checkpoints --rollout C:\path\to\roll
 conversation-lifecycle-manager.exe prepare-migration --rollout C:\path\to\rollout.jsonl `
   --backend C:\path\to\copied\codex.exe --runtime-root C:\path\to\clm-runtime
 conversation-lifecycle-manager.exe restore-original --manifest C:\path\to\manifest.json
+conversation-lifecycle-manager.exe restore-archived-original --manifest C:\path\to\manifest.json `
+  --archived-rollout C:\path\to\.codex\archived_sessions\rollout.jsonl
+conversation-lifecycle-manager.exe reactivate-unarchived --manifest C:\path\to\manifest.json `
+  --backend C:\path\to\copied\codex.exe --runtime-root C:\path\to\clm-runtime
 ```
 
 Mutation commands refuse to run while `ChatGPT.exe`, `codex.exe`, or the CLM
