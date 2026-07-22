@@ -1,0 +1,11 @@
+Publishes the offline refresh-migration transaction for managed conversations whose mutable active JSONL tail has regrown after activation.
+
+Safety and verification:
+- refresh requires all Codex owners to be closed;
+- rehydrates exact history and retains the prior generation;
+- activates only a strictly smaller candidate around a native checkpoint;
+- does not force semantic Compact;
+- 31 exported files match the verified source export by SHA-256;
+- exported public contract, 21 Rust tests, fmt, strict Clippy, privacy scan, and Markdown-link audit pass.
+
+No new binary release is included. The public CLMSetup alpha does not yet install automatic exit maintenance.
