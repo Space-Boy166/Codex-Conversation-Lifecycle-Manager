@@ -1,0 +1,5 @@
+Release audit: public-only source update prepared from an isolated clone.
+Verified: cargo test --all-targets --locked; cargo clippy --all-targets --locked -- -D warnings;
+Test-PublicReleaseContract.ps1; Build-PublicRelease.ps1; privacy scan (0 sensitive-path matches,
+0 forbidden binaries); isolated skills/list cache canary (34.402 ms cold, 0.162 ms cache hit).
+Remaining risk: real Desktop natural-append acceptance and broad Optimistic Resume acceptance are not claimed.
